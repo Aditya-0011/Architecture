@@ -16,34 +16,7 @@ So, I abandoned the monolithic REST approach entirely and built a strictly-typed
 
 The architecture relies on absolute isolation. The frontends talk exclusively to a central API perimeter, which handles the dirty work before passing clean, binary payloads down to the internal backend services.
 
-```mermaid
-graph TD
-    Public[Next.js Portfolio]
-    Admin[Console & Manager UIs]
-
-    Gateway[Fiber API Gateway]
-    Redis[(Redis)]
-
-    Auth[Auth Service gRPC]
-    Manager[Manager Service gRPC]
-    Future[Wallet & Future Services...]
-
-    AuthDB[(Auth DB)]
-    ManagerDB[(Manager DB)]
-    FutureDB[(Future DBs)]
-
-    Public -- "REST (X-API-KEY)" --> Gateway
-    Admin -- "REST (Session Cookie)" --> Gateway
-
-    Gateway -- "Rate Limits & Sessions" --> Redis
-    Gateway -- "gRPC" --> Auth
-    Gateway -- "gRPC" --> Manager
-    Gateway -. "gRPC" .-> Future
-
-    Auth -- "pgx" --> AuthDB
-    Manager -- "pgx" --> ManagerDB
-    Future -. "pgx" .-> FutureDB
-```
+![Architecture Diagram](https://raw.githubusercontent.com/Aditya-0011/Architecture/refs/heads/main/diagram.svg)
 
 ---
 
