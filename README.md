@@ -107,6 +107,6 @@ The architecture is entirely open-source. You can explore the exact implementati
 * [`manager-service`](https://github.com/Aditya-0011/manager-service) - The headless CMS backend powering the portfolio data.
 
 **Client Applications**
-* [`portfolio-website`](https://github.com/Aditya-0011/portfolio-website) - The source code for this exact Next.js portfolio website, acting as Tenant #1.
+* [`portfolio`](https://github.com/Aditya-0011/portfolio) - The source code for this exact Next.js portfolio website, acting as Tenant #1.
 * [`console-ui`](https://github.com/Aditya-0011/console-ui) - The identity and systems operations dashboard.
 * [`manager-ui`](https://github.com/Aditya-0011/manager-ui) - The dedicated CMS content dashboard.
