@@ -16,7 +16,7 @@ So, I abandoned the monolithic REST approach entirely and built a strictly-typed
 
 The architecture relies on absolute isolation. The frontends talk exclusively to a central API perimeter, which handles the dirty work before passing clean, binary payloads down to the internal backend services.
 
-![Architecture Diagram](https://raw.githubusercontent.com/Aditya-0011/architecture/refs/heads/main/architecture.svg)
+![Architecture Diagram](https://raw.githubusercontent.com/Aditya-0011/Architecture/refs/heads/main/diagram.svg)
 
 ---
 
