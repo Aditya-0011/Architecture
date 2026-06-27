@@ -16,11 +16,38 @@ So, I abandoned the monolithic REST approach entirely and built a strictly-typed
 
 The architecture relies on absolute isolation. The frontends talk exclusively to a central API perimeter, which handles the dirty work before passing clean, binary payloads down to the internal backend services.
 
-![Architecture Diagram](https://raw.githubusercontent.com/Aditya-0011/Architecture/refs/heads/main/diagram.svg)
+```mermaid
+graph TD
+    Public[Next.js Portfolio]
+    Admin[Console & Manager UIs]
+
+    Gateway[Fiber API Gateway]
+    Redis[(Redis)]
+
+    Auth[Auth Service gRPC]
+    Manager[Manager Service gRPC]
+    Future[Wallet & Future Services...]
+
+    AuthDB[(Auth DB)]
+    ManagerDB[(Manager DB)]
+    FutureDB[(Future DBs)]
+
+    Public -- "REST (X-API-KEY)" --> Gateway
+    Admin -- "REST (Session Cookie)" --> Gateway
+
+    Gateway -- "Rate Limits & Sessions" --> Redis
+    Gateway -- "gRPC" --> Auth
+    Gateway -- "gRPC" --> Manager
+    Gateway -. "gRPC" .-> Future
+
+    Auth -- "pgx" --> AuthDB
+    Manager -- "pgx" --> ManagerDB
+    Future -. "pgx" .-> FutureDB
+```
 
 ---
 
-## 1. The Traffic Cop: Fiber API Gateway
+## The Traffic Cop: Fiber API Gateway
 
 I built the API gateway using Fiber, a ridiculously fast web framework for Go, to act as the primary entry point for all external traffic. 
 
@@ -32,7 +59,7 @@ Once a request passes the gauntlet, the gateway handles the JSON-to-Protobuf tra
 
 ---
 
-## 2. Internal Contracts via gRPC & Buf
+## Internal Contracts via gRPC & Buf
 
 When you split a monolith into microservices, keeping internal communication in sync across different codebases can quickly turn into a nightmare of broken endpoints and mismatched JSON. To kill this friction forever, the API gateway and internal backend services communicate strictly over gRPC using Protocol Buffers (`.proto`).
 
@@ -45,7 +72,7 @@ Right now, the cluster runs two isolated microservices, but the grid is designed
 
 ---
 
-## 3. Escaping the Denormalization Trap (Moving to PostgreSQL)
+## Escaping the Denormalization Trap (Moving to PostgreSQL)
 
 As the first real-world stress test of this platform, I migrated my public-facing website from a legacy MongoDB cluster to this new architecture. 
 
@@ -73,7 +100,7 @@ That is by design. This is a personal platform. Allowing open registration intro
 
 ---
 
-## 4. The Presentation Layer
+## The Presentation Layer
 
 The client infrastructure consists of three distinct React applications. To mirror the backend's separation of concerns, the administrative tools are cleanly split by domain:
 
@@ -107,6 +134,6 @@ The architecture is entirely open-source. You can explore the exact implementati
 * [`manager-service`](https://github.com/Aditya-0011/manager-service) - The headless CMS backend powering the portfolio data.
 
 **Client Applications**
-* [`portfolio`](https://github.com/Aditya-0011/portfolio) - The source code for this exact Next.js portfolio website, acting as Tenant #1.
+* [`portfolio-website`](https://github.com/Aditya-0011/portfolio-website) - The source code for this exact Next.js portfolio website, acting as Tenant #1.
 * [`console-ui`](https://github.com/Aditya-0011/console-ui) - The identity and systems operations dashboard.
 * [`manager-ui`](https://github.com/Aditya-0011/manager-ui) - The dedicated CMS content dashboard.
