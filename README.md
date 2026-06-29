@@ -41,7 +41,7 @@ I manage all schemas centrally using **Buf**. It acts as the ultimate gatekeeper
 Right now, the cluster runs two isolated microservices, but the grid is designed to ingest more:
 * **Auth Service:** The central identity provider. It handles SSO (Single Sign-On) for the entire ecosystem and issues/rotates API keys.
 * **Manager Service (Tenant #1):** The headless CMS. It drives the CRUD operations for my work experiences, portfolio projects, and incoming contact messages.
-* **Future Services:** Because the Gateway and Auth layers are completely decoupled, I can drop a new service—like a Wallet ledger or an analytics engine—directly into the grid without touching the existing architecture.
+* **Future Services:** Because the Gateway and Auth layers are completely decoupled, I can drop a new service directly into the grid without touching the existing architecture.
 
 ---
 
@@ -84,13 +84,33 @@ Both admin interfaces are built for absolute speed: **React 19, Vite, Bun, and R
 
 ---
 
+## Bare-Metal Deployment
+
+While Kubernetes is the industry standard for container orchestration, running its control plane introduces unnecessary architectural complexity. I wanted absolute simplicity and engineering efficiency. Therefore, the deployment pipeline is built for bare-metal efficiency using GitHub Actions and Podman.
+
+Currently, every service follows a standardized CI/CD workflow. When a deployment is triggered, GitHub Actions builds the image, pushes it to the GitHub Container Registry (GHCR), and SSHs directly into the target virtual machine to orchestrate the rollout. Exposing an SSH port for an external CI runner is a temporary, pragmatic trade-off to bootstrap Tenant #1, but the container execution itself remains heavily locked down.
+
+Noticeably, I do not run the Docker daemon on my servers; I use **Podman**. 
+
+Because Podman is daemonless and integrates natively with Linux `systemd`, it eliminates background overhead. More importantly, it allows me to enforce strict, unyielding service boundaries. When the deployment script spins up a service, the container is strictly isolated, physically preventing cross-service interference.
+
+---
+
+## Logging & Telemetry
+
+For observability, I intentionally avoided deploying complex stacks. Because Podman integrates directly with the OS, all container output is natively piped into the system journal. If I need to trace a failed gRPC request or audit a rate limit, I simply query `journalctl`. It is fast, built-in, and inherently elegant.
+
+---
+
 ## What Comes Next?
 
 Building a multi-language gRPC microservice cluster just to serve a portfolio website is the literal definition of over-engineering. 
 
 But this portfolio was never the end goal; it was just the proof of concept. By drawing hard boundaries between the REST perimeter, the gRPC transit layers, and the locked-down PostgreSQL storage, I now have an enterprise-grade backend ecosystem running on micro-resources. 
 
-The chassis is built. Now it's time to start dropping new services onto the grid.
+The chassis is built, but the infrastructure will continue to evolve. The future roadmap involves closing the CI/CD deployment perimeter by introducing a **Bastion Host**. Eventually, GitHub Actions will send built images strictly to the Bastion, which will then signal the internal production servers to pull the updates, severing all direct external access to the production grid.
+
+Additionally, as the ecosystem expands, terminal-based log parsing will not scale. The plan is to migrate to a centralized observability stack using **Grafana, Loki, and VictoriaMetrics** to aggregate logs and metrics across the entire cluster. It is also time to start dropping new backend services directly onto the grid.
 
 ---
 
