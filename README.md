@@ -32,7 +32,7 @@ The API gateway itself is built using Fiber, a ridiculously fast web framework f
 
 The gateway executes exactly **zero** business logic. Its entire job is to keep the noise out. It intercepts incoming traffic, handles rate-limiting via Redis to stop script kiddies from spamming my endpoints, and manages two distinct authentication lanes:
 * **The Admin Dashboards:** Authenticate via secure, Redis-backed session cookies. The `__Secure-session` cookie is scoped strictly to `api.adityapunmiya.com`, so the websites themselves never even see it.
-* **The Public Portfolios:** Communicate via per-user API keys, stored only as SHA-256 hashes. A key can reach exactly five routes: four that read portfolio content and one that delivers contact messages. Everything else slams shut.
+* **The Public Portfolios:** Communicate via per-user API keys, stored only as SHA-256 hashes. A key can reach exactly six routes: four that read portfolio content, one that delivers contact messages, and one that asks whether a chatbot visitor has run out of questions. Everything else slams shut.
 
 Yes, portfolios, plural. Anyone I give Manager access to can run their own portfolio on this platform, even from a completely different domain like `xyz.com`. They register that domain against their key in the Console, and the gateway opens a second, strictly cookie-free CORS lane just for it. An unregistered site gets nothing, and even a registered one can never ride on somebody's logged-in session.
 
@@ -48,7 +48,7 @@ I manage all schemas centrally using **Buf**. It acts as the ultimate gatekeeper
 
 Right now, the cluster runs three isolated microservices, showcasing a true polyglot architecture:
 * **Auth Service:** The central identity provider (Go). It handles SSO (Single Sign-On) for the entire ecosystem, decides who is allowed into which app, and issues/rotates API keys.
-* **Manager Service:** The headless CMS (Go). It drives the CRUD operations for work experiences, portfolio projects, and incoming contact messages, with every row belonging to its own user.
+* **Manager Service:** The headless CMS (Go). It drives the CRUD operations for work experiences, portfolio projects, and incoming contact messages, with every row belonging to its own user. It also remembers which AI model the portfolio chatbot should use.
 * **Wallet Service:** The core financial ledger engine (C# / .NET). Manages balances, categories, and transaction histories via locked-down PostgreSQL stored procedures.
 * **Future Services:** Because the Gateway and Auth layers are completely decoupled, I can drop a new service directly into the grid without touching the existing architecture.
 
@@ -108,11 +108,25 @@ The client infrastructure consists of four distinct React applications. To mirro
 * **Console UI:** The identity and operations dashboard. It acts as the SSO hub, routing requests through the gateway to the Auth service to manage active login sessions, user accounts, app access, and API key rotation. 
 * **Manager UI:** The dedicated CMS dashboard. It handles the CRUD operations for the portfolio data once the gateway verifies the SSO session.
 * **Wallet UI:** The dedicated financial tracking dashboard. Built with zero floating-point precision loss on balance calculations, because money that rounds itself is a horror story.
-* **Portfolio:** The Next.js site you are reading this on. It pulls its content through the gateway with an API key and serves prerendered pages, so visitors aren't left waiting on my backend.
+* **Portfolio:** The Next.js site you are reading this on. It pulls its content through the gateway with an API key and serves prerendered pages, so visitors aren't left waiting on my backend. It also runs the chatbot below, because of course it does.
 
 All admin interfaces are built for absolute speed: **React, Vite, and Bun**, with asynchronous caching handled flawlessly.
 
 And when a project isn't ready for the public, it points to a tiny construction page: plain HTML and a few hundred bytes of JavaScript, because not everything deserves a framework. Not even on a platform this over-engineered.
+
+---
+
+## The Chatbot (Of Course There Is a Chatbot)
+
+Apparently a portfolio now needs an AI that gushes about its owner, so the `/chat` page answers questions about me and shuts down everything else. Ask it about binary search and it will politely decline. I am not running a free coding assistant for the entire internet.
+
+The route is refreshingly boring. The browser talks to a route on the Next.js site, and that route calls **Vercel AI Gateway** directly, streaming the reply back over a plain HTTP response with the **AI SDK**. No WebSockets to babysit and no event channel to keep alive. Chat traffic never touches my servers, except for one quick question to the gateway: has this visitor had enough?
+
+Swapping the model takes a dropdown in Manager and zero deploys. The site re-reads the choice every minute, so the next question simply lands on the new model. The browser is never trusted to pick one, because the moment it can, somebody picks the most expensive model on the menu.
+
+There are no tools and no MCP server here, because the problem doesn't deserve them. Everything the model needs to know about me is small enough to hand over with every question, straight from the same cached data the site already renders.
+
+Abuse runs into the same Redis limiter as everything else: 30 questions an hour per visitor, 300 an hour overall, and if Redis is down the chat refuses rather than running unmetered. Conversations are never saved on my side. Reload the page and it's gone.
 
 ---
 
