@@ -62,7 +62,7 @@ As the first real-world stress test of this platform, I migrated my public-facin
 
 MongoDB was great for fast document reads, but it introduced a structural flaw: the denormalization trap. To avoid slow joins, MongoDB encourages embedding documents inside other documents. But when a piece of data changes, that update has to be manually propagated across multiple documents. 
 
-Yes, modern MongoDB supports multi-document transactions to prevent data fracturing during network hiccups. But any experienced engineer knows that heavily relying on Mongo transactions is an architectural anti-pattern. They introduce massive lock contention and performance degradation because you are forcing a NoSQL database to behave like a relational one. It is a hellhole I had no interest in managing.
+Yes, modern MongoDB supports multi-document transactions to prevent data fracturing during network hiccups, and they work. But once your updates routinely span multiple documents, you are asking a document database to behave like a relational one, and paying for it in performance and complexity. My take: if you need all of that, use an RDBMS. Maintaining it on MongoDB was a hellhole I had no interest in managing.
 
 Moving to PostgreSQL solved this immediately. Relational normalization means updating a single row propagates the change everywhere, instantly and safely, with native ACID compliance that doesn't tank system performance. 
 
