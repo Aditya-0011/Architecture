@@ -25,8 +25,8 @@ The architecture relies on absolute isolation. The frontends talk exclusively to
 All external ingress traffic first passes through **HAProxy**, which sits at the absolute edge of the production infrastructure. It acts as the primary reverse proxy and entry point, handling:
 * **TLS Termination & HTTPS Enforcement:** Automatically redirects HTTP to HTTPS (`*:443 ssl crt`) and manages SSL certificates.
 * **Domain ACL Routing:** Routes traffic based on subdomains (`auth.api.adityapunmiya.com`, `manager.api.adityapunmiya.com`, `wallet.api.adityapunmiya.com`) directly to the backend gateway cluster. Any hostname it doesn't recognize gets a flat `404`.
-* **Edge Compression & Headers:** Applies dynamic `gzip` compression for JSON/text responses and injects `X-Server` headers.
-* **Health Checks & Telemetry:** Monitors backend availability via health checks. The stats page is welded to localhost and only reachable through an SSH tunnel, because a dashboard facing the open internet is an invitation.
+* **Edge Compression & Headers:** Applies dynamic `gzip` compression for JSON/text responses, strips client-supplied forwarding headers and caps each source IP at 200 requests per 10 seconds.
+* **Health Checks & Telemetry:** Monitors backend availability with an HTTP health check that also confirms the gateway can reach Redis. The stats page is welded to localhost and only reachable through an SSH tunnel, because a dashboard facing the open internet is an invitation.
 
 The API gateway itself is built using Fiber, a ridiculously fast web framework for Go. 
 
@@ -34,7 +34,11 @@ The gateway executes exactly **zero** business logic. Its entire job is to keep 
 * **The Admin Dashboards:** Authenticate via secure, Redis-backed session cookies. The `__Secure-session` cookie is scoped strictly to `api.adityapunmiya.com`, so the websites themselves never even see it.
 * **The Public Portfolios:** Communicate via per-user API keys, stored only as SHA-256 hashes. A key can reach exactly six routes: four that read portfolio content, one that delivers contact messages, and one that asks whether a chatbot visitor has run out of questions. Everything else slams shut.
 
+Password guessing gets its own speed bump: login attempts are capped per account, not just per IP, so rotating through a pool of proxies buys an attacker nothing. And when I disable a user, their API key dies on the very next request instead of lingering until some cache happens to expire.
+
 Yes, portfolios, plural. Anyone I give Manager access to can run their own portfolio on this platform, even from a completely different domain like `xyz.com`. They register that domain against their key in the Console, and the gateway opens a second, strictly cookie-free CORS lane just for it. An unregistered site gets nothing, and even a registered one can never ride on somebody's logged-in session.
+
+The gateway itself only listens on localhost, so there is no sneaking around HAProxy, and it only believes forwarded client IPs when they come from HAProxy. Spoofing your way past the rate limiter with a fake header doesn't work.
 
 Once a request passes the gauntlet, the gateway wraps the request in a 9.5-second deadline context (giving services a safe margin before HAProxy drops the connection), translates the JSON payload to Protobuf, and fires a lightweight binary gRPC call into the internal backend cluster.
 
@@ -134,7 +138,7 @@ Abuse runs into the same Redis limiter as everything else: 30 questions an hour 
 
 While Kubernetes is the industry standard for container orchestration, running its control plane introduces unnecessary architectural complexity. I wanted absolute simplicity and engineering efficiency. Therefore, the deployment pipeline is built for bare-metal efficiency using GitHub Actions and Podman.
 
-Currently, every service follows a standardized CI/CD workflow. When a deployment is triggered, GitHub Actions builds the image, pushes it to the GitHub Container Registry (GHCR), and SSHs directly into the target virtual machine to orchestrate the rollout. Exposing an SSH port for an external CI runner is a temporary, pragmatic trade-off, but the container execution itself remains heavily locked down.
+Currently, every service follows a standardized CI/CD workflow. When a deployment is triggered, GitHub Actions builds the image, pushes it to the GitHub Container Registry (GHCR), and SSHs directly into the target virtual machine to orchestrate the rollout. The runner refuses to connect unless the server's host key matches a pinned fingerprint, so it can't be tricked into handing deploy credentials to an impostor. Exposing an SSH port for an external CI runner is a temporary, pragmatic trade-off, but the container execution itself remains heavily locked down.
 
 Noticeably, I do not run the Docker daemon on my servers; I use **Podman**. 
 
