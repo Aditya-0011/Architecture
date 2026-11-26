@@ -24,7 +24,7 @@ The architecture relies on absolute isolation. The frontends talk exclusively to
 
 All external ingress traffic first passes through **HAProxy**, which sits at the absolute edge of the production infrastructure. It acts as the primary reverse proxy and entry point, handling:
 * **TLS Termination & HTTPS Enforcement:** Automatically redirects HTTP to HTTPS (`*:443 ssl crt`) and manages SSL certificates.
-* **Domain ACL Routing:** Routes traffic based on subdomains (`auth.api.adityapunmiya.com`, `manager.api.adityapunmiya.com`, `wallet.api.adityapunmiya.com`) directly to the backend gateway cluster. Any hostname it doesn't recognize gets a flat `404`.
+* **Domain ACL Routing:** Routes traffic based on subdomains (`auth.api.adityapunmiya.com`, `manager.api.adityapunmiya.com`, `wallet.api.adityapunmiya.com`, `tools.api.adityapunmiya.com`) directly to the backend gateway cluster. Any hostname it doesn't recognize gets a flat `404`.
 * **Edge Compression & Headers:** Applies dynamic `gzip` compression for JSON/text responses, strips client-supplied forwarding headers and caps each source IP at 200 requests per 10 seconds.
 * **Health Checks & Telemetry:** Monitors backend availability with an HTTP health check that also confirms the gateway can reach Redis. The stats page is welded to localhost and only reachable through an SSH tunnel, because a dashboard facing the open internet is an invitation.
 
@@ -50,10 +50,11 @@ When you split a monolith into microservices, keeping internal communication in 
 
 I manage all schemas centrally using **Buf**. It acts as the ultimate gatekeeper, handling linting and compiling the exact Go structs my services expect. To catch bad data before it even hints at touching my application logic, I use `protovalidate` to bake validation constraints directly into the raw `.proto` definitions. 
 
-Right now, the cluster runs three isolated microservices, showcasing a true polyglot architecture:
-* **Auth Service:** The central identity provider (Go). It handles SSO (Single Sign-On) for the entire ecosystem, decides who is allowed into which app, and issues/rotates API keys.
+Right now, the cluster runs four isolated microservices, showcasing a true polyglot architecture:
+* **Auth Service:** The central identity provider (Go). It handles SSO (Single Sign-On) for the entire ecosystem, decides who is allowed into which app (and, for Tools, into which individual tool), and issues/rotates API keys.
 * **Manager Service:** The headless CMS (Go). It drives the CRUD operations for work experiences, portfolio projects, and incoming contact messages, with every row belonging to its own user. It also remembers which AI model the portfolio chatbot should use.
 * **Wallet Service:** The core financial ledger engine (C# / .NET). Manages balances, categories, and transaction histories via locked-down PostgreSQL stored procedures.
+* **Tools Service:** The newest arrival (Go), and my personal toolbox. It stores **Folio** markdown notes in virtual folders, with per-user quotas and an exclusive edit lock so the same note can't be edited in two places at once, plus saved **Stencil** patterns. It is also the first real test of that "plug into the grid for free" promise: it was added long after everything else, without touching how authentication, sessions or rate limiting work.
 * **Future Services:** Because the Gateway and Auth layers are completely decoupled, I can drop a new service directly into the grid without touching the existing architecture.
 
 And a private network is not a security strategy, so the gateway still has to prove itself. Every gRPC call carries a shared bearer token, and the services bind only to a private IP. If you aren't the gateway, the grid doesn't want to hear from you.
@@ -84,22 +85,32 @@ And that was only three. The whole point of this platform is dropping new servic
 
 So I killed them. There is now **one PostgreSQL server and one database**, carved into logically separated schemas: `account` for Auth, `portfolio` for Manager, and `wallet` for Wallet. One thing to upgrade. One thing to back up. One pool of memory that actually gets used.
 
+The decision paid for itself the first time I built something new. When the Tools service came along later, it didn't get a server, a backup job or a set of credentials to babysit. It got a `tools` schema and a role, and that was the whole database story.
+
 Nothing about this is free, and I won't pretend otherwise: if that one server goes down, everything goes down with it. For a personal platform, that is a trade I will happily make to get my weekends back. And the day a service genuinely outgrows this setup, its schema can be lifted out and moved to a server of its own.
 
 ### Paranoid Database Security
 Merging the servers did not mean merging the trust. Every service still gets its own locked room: each role can only enter its own schema, so Manager has no business reading Wallet's ledger, and PostgreSQL makes sure it can't. Then, I took the security model to a slightly paranoid extreme. 
 
-The application services connect to PostgreSQL using heavily restricted database roles (`auth_service`, `manager_service`, `wallet_service`). I explicitly **revoked `INSERT`, `UPDATE`, and `DELETE` permissions** from the tables. 
+The application services connect to PostgreSQL using heavily restricted database roles (`auth_service`, `manager_service`, `wallet_service`, `tools_service`). I explicitly **revoked `INSERT`, `UPDATE`, and `DELETE` permissions** from the tables. 
 
 > **The Security Philosophy:** If the Go service is compromised, a malicious actor still cannot run arbitrary write queries or drop tables. 
 
 Instead, all mutations are forced to route through tightly controlled, pre-compiled **PL/pgSQL stored procedures**. The application can only call specific execution paths. If it tries to write outside the lines, the database itself violently rejects it. The tables are created by a separate root role too, so the services don't even own the furniture.
 
+### Deleting a User Without Foreign Keys
+
+There are no foreign keys between schemas, and there never will be. The moment Wallet's tables point at Auth's, the two services are welded together, and that schema can never be lifted out to a server of its own. The procedures clean up their own related rows instead.
+
+That leaves one awkward question: when I delete a user, who deletes their data? Nobody is allowed to reach into someone else's schema, so the gateway runs the errand. It disables the account first, so the user is locked out immediately. Then it asks Manager, Wallet and Tools in parallel to purge everything that user owns, and only when all three report back does Auth delete the account itself. Auth goes last on purpose: if one service fails halfway, the user stays visible (and disabled) in the Console with a retry button, instead of becoming a ghost whose data nobody can find again. Every purge is safe to repeat, so retrying never hurts.
+
+For the ghosts that existed before this was built, the Console has an orphan report: every service lists the user IDs it holds data for, the gateway compares them against Auth, and anything left over can be purged with one click.
+
 ### The Single-Tenant Constraint (Rest in Peace)
 
 A previous version of this page proudly explained that the Auth schema hardcoded the user ID to `1`, physically guaranteeing that nobody else could ever exist in my system. That was by design. I was very smug about it.
 
-Then I realized a portfolio CMS is a lot more useful when other people can use it too, so the constraint is gone. Auth now has real **role-based access control**: one administrator and any number of tenants, each granted only the apps they are allowed to open. Every Manager and Wallet row is tied to its owner, so one tenant can't go wandering through another's data.
+Then I realized a portfolio CMS is a lot more useful when other people can use it too, so the constraint is gone. Auth now has real **role-based access control**: one administrator and any number of tenants, each granted only the apps they are allowed to open. Every Manager, Wallet and Tools row is tied to its owner, so one tenant can't go wandering through another's data. Tools goes one level deeper: access is granted per tool, so someone can have Folio without Stencil.
 
 What did not change is the paranoia about who gets in. Open registration still doesn't exist. Every account is created by hand from the Console, starts with a temporary password that expires in 7 days, and must pick a new one on first login. No sign-up form, no verification overhead, no rogue accounts.
 
@@ -107,11 +118,12 @@ What did not change is the paranoia about who gets in. Open registration still d
 
 ## The Presentation Layer
 
-The client infrastructure consists of four distinct React applications. To mirror the backend's separation of concerns, the administrative tools are cleanly split by domain:
+The client infrastructure consists of five distinct React applications. To mirror the backend's separation of concerns, the administrative tools are cleanly split by domain:
 
 * **Console UI:** The identity and operations dashboard. It acts as the SSO hub, routing requests through the gateway to the Auth service to manage active login sessions, user accounts, app access, and API key rotation. 
 * **Manager UI:** The dedicated CMS dashboard. It handles the CRUD operations for the portfolio data once the gateway verifies the SSO session.
 * **Wallet UI:** The dedicated financial tracking dashboard. Built with zero floating-point precision loss on balance calculations, because money that rounds itself is a horror story.
+* **Tools UI:** Folio and Stencil. Folio loads the note list once and caches note bodies in the browser by version, so opening a note I've already read never touches the backend. Stencil turns pasted data into SQL, JSON or whatever text I need through a pattern, and it runs entirely in the browser: the data never leaves the tab, only the saved patterns do.
 * **Portfolio:** The Next.js site you are reading this on. It pulls its content through the gateway with an API key and serves prerendered pages, so visitors aren't left waiting on my backend. It also runs the chatbot below, because of course it does.
 
 All admin interfaces are built for absolute speed: **React, Vite, and Bun**, with asynchronous caching handled flawlessly.
@@ -150,16 +162,24 @@ Every piece gets a machine of its own. The gateway, each backend service, and Po
 
 ## Logging & Telemetry
 
-For observability, I intentionally avoided deploying complex stacks. Because Podman integrates directly with the OS, all container output is natively piped into the system journal. If I need to trace a failed gRPC request or audit a rate limit, I simply query `journalctl`. It is fast, built-in, and inherently elegant.
+For a long time, observability meant SSH and `journalctl`. That works right up until the question is "what happened at 3 AM?" and the answer is scattered across machines.
+
+Now a small **Grafana Alloy** agent runs next to every service and ships everything to **Grafana Cloud**. Nothing stores metrics or logs on my own hardware, so there is no database to babysit just to watch the other databases.
+
+* **Metrics:** The gateway counts every request by route and status, and every gRPC service records its calls, error codes and latency through one shared interceptor. The metrics endpoints listen on localhost only, so nobody on the internet can read them.
+* **Logs:** Container logs still flow into the system journal; Alloy just picks them up from there, parses the JSON and ships them. Labels stay low-cardinality: never a user ID, an IP or a raw path.
+* **Database:** PostgreSQL reports per-query timings via `pg_stat_statements`, with every value replaced by a placeholder. The collector that would ship real query samples stays off, because "send my users' e-mails to a third party" is not an observability strategy.
+* **From the outside:** Synthetic checks hit the public sites and APIs from Grafana's own probes every few minutes. They catch what internal metrics can't, like DNS breaking or a TLS certificate quietly expiring.
+
+Alerts go to my inbox for the things that actually matter: a service down, errors spiking, a disk filling up, a certificate running out.
 
 ---
 
 ## Future Roadmap & System Evolution
 
-With the HAProxy/Fiber perimeter, gRPC polyglot microservice grid, and zero-trust storage fully operational, future iterations will focus on infrastructure hardening, advanced telemetry, and resilience:
+With the HAProxy/Fiber perimeter, gRPC polyglot microservice grid, and zero-trust storage fully operational, future iterations will focus on infrastructure hardening and resilience:
 
 * **Bastion Host Deployment:** Severing direct SSH ingress access to production VMs by routing all GitHub Actions image deployments strictly through an isolated bastion host.
-* **Centralized Telemetry:** Migrating from terminal journal logs (`journalctl`) to a centralized **Grafana, Loki, and VictoriaMetrics** observability stack as cluster traffic scales.
 * **Distributed Resilience Patterns:** Enhancing the Gateway and service layers with dynamic P95-based timeouts, circuit breaker feedback loops, and retry budgets.
 
 ---
@@ -176,10 +196,12 @@ The architecture is entirely open-source. You can explore the exact implementati
 * [`auth-service`](https://github.com/Aditya-0011/auth-service) - The identity provider, SSO hub, and API key manager (Go).
 * [`manager-service`](https://github.com/Aditya-0011/manager-service) - The headless CMS backend powering the portfolio data (Go).
 * [`wallet-service`](https://github.com/Aditya-0011/wallet-service) - The core financial ledger engine (C# / .NET).
+* [`tools`](https://github.com/Aditya-0011/tools) - The Folio and Stencil backend (Go).
 
 **Client Applications**
 * [`portfolio-website`](https://github.com/Aditya-0011/portfolio-website) - The source code for this exact Next.js portfolio website.
 * [`console-ui`](https://github.com/Aditya-0011/console-ui) - The identity and systems operations dashboard.
 * [`manager-ui`](https://github.com/Aditya-0011/manager-ui) - The dedicated CMS content dashboard.
 * [`wallet-ui`](https://github.com/Aditya-0011/wallet-ui) - The financial tracking dashboard.
+* [`tools-ui`](https://github.com/Aditya-0011/tools-ui) - Folio notes and Stencil, in the browser.
 * [`construction-global`](https://github.com/Aditya-0011/construction-global) - The deliberately tiny page for anything still being built.
