@@ -2,19 +2,21 @@
 
 I could have thrown together a basic template for this portfolio and called it a day. But where is the fun in that? 
 
-I wanted a complete personal ecosystem—built with an extensible, bulletproof foundation ready to ingest whatever chaotic backend ideas I dream up in the future. The portfolio website is just one client application within this platform.
+I wanted a complete personal ecosystem—built on an extensible, solid foundation ready to ingest whatever chaotic backend ideas I dream up in the future. The portfolio website is just one client application within this platform.
 
 This architecture didn't appear overnight; it evolved through constant iteration. I originally started with a monolithic Python backend. I eventually rewrote it into a Go REST API for two reasons: I wanted to learn Go, and I wanted to eliminate the heavy runtime overhead of Python. On the frontend, my administrative dashboards went through two distinct iterations using JavaScript and Bun as I refined the UI patterns. 
 
-While those monolithic REST APIs worked fine for a simple website, they presented a structural roadblock: if I wanted to build a completely separate project (like a financial ledger or a custom analytics engine), I would have to recreate authentication, rate-limiting, and core boilerplate all over again. I wanted to genuinely learn how to build distributed systems, and my personal platform was the perfect playground to do it.
+While those monolithic REST APIs worked fine for a simple website, they presented a structural roadblock: if I wanted to build a completely separate project (like an expense tracker or a custom analytics engine), I would have to recreate authentication, rate-limiting, and core boilerplate all over again. I wanted to genuinely learn how to build distributed systems, and my personal platform was the perfect playground to do it.
 
 So, I abandoned the monolithic REST approach entirely and built a strictly-typed microservice platform from scratch—extracting authentication and routing so any future service can plug into the grid for free. Here is how I wired together Go, gRPC, React, and a slightly paranoid PostgreSQL setup to make it happen.
+
+Let me be honest about the motives, because "distributed systems" sounds a lot nobler than the truth. Reason one: I wanted to learn. Reason two: pure, industrial-grade laziness. I refuse to rebuild authentication for every new idea, and I refuse even harder to patch the same vulnerable package in five repositories at midnight, praying I didn't forget a flag in repo number four. A shared library fixes the copy-paste; it does nothing for the "now update it everywhere" part. I'll happily repeat work when it adds value. This added nothing but anxiety. (Yes, today an AI agent would do those five updates without complaining. When I poured this foundation, agentic coding was still learning to walk.)
 
 ---
 
 ## The Grand Plan
 
-The architecture relies on absolute isolation. The frontends talk exclusively to a central API perimeter, which handles the dirty work before passing clean, binary payloads down to the internal backend services.
+The architecture relies on strict isolation. The frontends talk exclusively to a central API perimeter, which handles the dirty work before passing clean, binary payloads down to the internal backend services.
 
 ![Architecture Diagram](https://raw.githubusercontent.com/Aditya-0011/Architecture/refs/heads/main/diagram.svg)
 
@@ -30,7 +32,7 @@ All external ingress traffic first passes through **HAProxy**, which sits at the
 
 The API gateway itself is built using Fiber, a ridiculously fast web framework for Go. 
 
-The gateway executes exactly **zero** business logic. Its entire job is to keep the noise out. It intercepts incoming traffic, handles rate-limiting via Redis to stop script kiddies from spamming my endpoints, and manages two distinct authentication lanes:
+The gateway executes no business logic, with one deliberate exception I'll get to later (deleting a user). Its entire job is to keep the noise out. It intercepts incoming traffic, handles rate-limiting via Redis to stop script kiddies from spamming my endpoints, and manages two distinct authentication lanes:
 * **The Admin Dashboards:** Authenticate via secure, Redis-backed session cookies. The `__Secure-session` cookie is scoped strictly to `api.adityapunmiya.com`, so the websites themselves never even see it.
 * **The Public Portfolios:** Communicate via per-user API keys, stored only as SHA-256 hashes. A key can reach exactly six routes: four that read portfolio content, one that delivers contact messages, and one that asks whether a chatbot visitor has run out of questions. Everything else slams shut.
 
@@ -48,12 +50,14 @@ Once a request passes the gauntlet, the gateway wraps the request in a 9.5-secon
 
 When you split a monolith into microservices, keeping internal communication in sync across different codebases can quickly turn into a nightmare of broken endpoints and mismatched JSON. To kill this friction forever, the API gateway and internal backend services communicate strictly over gRPC using Protocol Buffers (`.proto`).
 
-I manage all schemas centrally using **Buf**. It acts as the ultimate gatekeeper, handling linting and compiling the exact Go structs my services expect. To catch bad data before it even hints at touching my application logic, I use `protovalidate` to bake validation constraints directly into the raw `.proto` definitions. 
+Why gRPC? Because I wanted to play with it, and I won't pretend otherwise. The textbook contenders for service-to-service calls are gRPC, Cap'n Proto and Thrift. Cap'n Proto had about three tutorials and a mailing list, and Thrift is the kind of project people politely stop recommending for new work. So gRPC won the way the last person standing wins a tournament.
+
+I manage all schemas centrally using **Buf**, which is what turned gRPC from painful into pleasant. It acts as the ultimate gatekeeper, handling linting and compiling the exact Go structs my services expect. To catch bad data before it even hints at touching my application logic, I use `protovalidate` to bake validation constraints directly into the raw `.proto` definitions. 
 
 Right now, the cluster runs four isolated microservices, showcasing a true polyglot architecture:
 * **Auth Service:** The central identity provider (Go). It handles SSO (Single Sign-On) for the entire ecosystem, decides who is allowed into which app (and, for Tools, into which individual tool), and issues/rotates API keys.
 * **Manager Service:** The headless CMS (Go). It drives the CRUD operations for work experiences, portfolio projects, and incoming contact messages, with every row belonging to its own user. It also remembers which AI model the portfolio chatbot should use.
-* **Wallet Service:** The core financial ledger engine (C# / .NET). Manages balances, categories, and transaction histories via locked-down PostgreSQL stored procedures.
+* **Wallet Service:** My personal expense tracker (C# / .NET). Not an accounting system and not double-entry bookkeeping: it records income and expenses in categories, keeps running totals for all time, the month and the week, remembers every edit, and exports to spreadsheets, all through locked-down PostgreSQL stored procedures. Why C# when everything else is Go? Money. C# ships a native `decimal` type built for exactly this, while Go makes you import a third-party package and hope. Java has `BigDecimal`, but I had already shipped C# at two jobs, and new-language anxiety is not something I want anywhere near my finances.
 * **Tools Service:** The newest arrival (Go), and my personal toolbox. It stores **Folio** markdown notes in virtual folders, with per-user quotas and an exclusive edit lock so the same note can't be edited in two places at once, plus saved **Stencil** patterns. It is also the first real test of that "plug into the grid for free" promise: it was added long after everything else, without touching how authentication, sessions or rate limiting work.
 * **Future Services:** Because the Gateway and Auth layers are completely decoupled, I can drop a new service directly into the grid without touching the existing architecture.
 
@@ -90,7 +94,7 @@ The decision paid for itself the first time I built something new. When the Tool
 Nothing about this is free, and I won't pretend otherwise: if that one server goes down, everything goes down with it. For a personal platform, that is a trade I will happily make to get my weekends back. And the day a service genuinely outgrows this setup, its schema can be lifted out and moved to a server of its own.
 
 ### Paranoid Database Security
-Merging the servers did not mean merging the trust. Every service still gets its own locked room: each role can only enter its own schema, so Manager has no business reading Wallet's ledger, and PostgreSQL makes sure it can't. Then, I took the security model to a slightly paranoid extreme. 
+Merging the servers did not mean merging the trust. Every service still gets its own locked room: each role can only enter its own schema, so Manager has no business reading Wallet's transactions, and PostgreSQL makes sure it can't. Then, I took the security model to a slightly paranoid extreme. 
 
 The application services connect to PostgreSQL using heavily restricted database roles (`auth_service`, `manager_service`, `wallet_service`, `tools_service`). I explicitly **revoked `INSERT`, `UPDATE`, and `DELETE` permissions** from the tables. 
 
@@ -98,9 +102,17 @@ The application services connect to PostgreSQL using heavily restricted database
 
 Instead, all mutations are forced to route through tightly controlled, pre-compiled **PL/pgSQL stored procedures**. The application can only call specific execution paths. If it tries to write outside the lines, the database itself violently rejects it. The tables are created by a separate root role too, so the services don't even own the furniture.
 
+None of this is free. Logic now lives in two languages, and a PL/pgSQL function is a lot less fun to test and refactor than Go code. Auth's and Tools' functions already run integration tests against a real PostgreSQL. Manager's and Wallet's are next in line, glaring at me from the backlog.
+
+### No ORM
+
+There is no ORM anywhere in the stack. I have nothing against ORMs; they'd just be unemployed here. Every write is a PL/pgSQL function and most reads are a single query, so an ORM would only add a translator that turns my three-line query into thirty lines of SQL nobody asked for. I want to see exactly what hits the database, and keep the data processing sitting right next to the data.
+
 ### Deleting a User Without Foreign Keys
 
-There are no foreign keys between schemas, and there never will be. The moment Wallet's tables point at Auth's, the two services are welded together, and that schema can never be lifted out to a server of its own. The procedures clean up their own related rows instead.
+There are no foreign keys anywhere, not even inside a schema. It's a habit I picked up from engineers who have run Oracle, PostgreSQL and embedded SQLite for decades, and who learned the hard way that foreign keys bring lock contention, hidden per-row work inside every innocent `DELETE`, and (in SQLite) enforcement that's silently off unless you ask for it. At my traffic, none of that costs anything measurable. What keeps me here is simpler: every delete function lists exactly what it removes, so nothing disappears that I didn't write down. The price is real, though: the database no longer guarantees that every row points at something that exists. That job is on my procedures, with the orphan report below as the safety net.
+
+Between schemas, it's more than habit. The moment Wallet's tables point at Auth's, the two services are welded together, and that schema can never be lifted out to a server of its own.
 
 That leaves one awkward question: when I delete a user, who deletes their data? Nobody is allowed to reach into someone else's schema, so the gateway runs the errand. It disables the account first, so the user is locked out immediately. Then it asks Manager, Wallet and Tools in parallel to purge everything that user owns, and only when all three report back does Auth delete the account itself. Auth goes last on purpose: if one service fails halfway, the user stays visible (and disabled) in the Console with a retry button, instead of becoming a ghost whose data nobody can find again. Every purge is safe to repeat, so retrying never hurts.
 
@@ -122,11 +134,13 @@ The client infrastructure consists of five distinct React applications. To mirro
 
 * **Console UI:** The identity and operations dashboard. It acts as the SSO hub, routing requests through the gateway to the Auth service to manage active login sessions, user accounts, app access, and API key rotation. 
 * **Manager UI:** The dedicated CMS dashboard. It handles the CRUD operations for the portfolio data once the gateway verifies the SSO session.
-* **Wallet UI:** The dedicated financial tracking dashboard. Built with zero floating-point precision loss on balance calculations, because money that rounds itself is a horror story.
+* **Wallet UI:** The expense-tracking dashboard: income, expenses, categories and totals. Built with zero floating-point precision loss on balance calculations, because money that rounds itself is a horror story.
 * **Tools UI:** Folio and Stencil. Folio loads the note list once and caches note bodies in the browser by version, so opening a note I've already read never touches the backend. Stencil turns pasted data into SQL, JSON or whatever text I need through a pattern, and it runs entirely in the browser: the data never leaves the tab, only the saved patterns do.
 * **Portfolio:** The Next.js site you are reading this on. It pulls its content through the gateway with an API key and serves prerendered pages, so visitors aren't left waiting on my backend. It also runs the chatbot below, because of course it does.
 
-All admin interfaces are built for absolute speed: **React, Vite, and Bun**, with asynchronous caching handled flawlessly.
+All admin interfaces are built for speed: **React, Vite, and Bun**, with server state cached by TanStack Query.
+
+Did the frontend need splitting? Absolutely not. I had already split the backend, so the frontend got split out of sheer momentum. The real reason: I'm a backend engineer with a genuine CSS phobia, and five dashboards meant five rounds of exposure therapy. Most of them predate useful agentic coding, so every misaligned `div` was fought by hand.
 
 And when a project isn't ready for the public, it points to a tiny construction page: plain HTML and a few hundred bytes of JavaScript, because not everything deserves a framework. Not even on a platform this over-engineered.
 
@@ -154,7 +168,11 @@ Currently, every service follows a standardized CI/CD workflow. When a deploymen
 
 Noticeably, I do not run the Docker daemon on my servers; I use **Podman**. 
 
-Because Podman is daemonless and integrates natively with Linux `systemd`, it eliminates background overhead. More importantly, it allows me to enforce strict, unyielding service boundaries. When the deployment script spins up a service, the container is strictly isolated, physically preventing cross-service interference. Containers get a read-only filesystem, every Linux capability dropped, and a hard memory ceiling. Images are tagged with the exact commit they came from, and if a new container dies on startup, the pipeline rolls back to the previous one on its own.
+Because Podman is daemonless and integrates natively with Linux `systemd`, it eliminates background overhead. More importantly, it allows me to enforce strict, unyielding service boundaries. When the deployment script spins up a service, the container is strictly isolated, preventing cross-service interference. Containers get a read-only filesystem, every Linux capability dropped, and a hard memory ceiling. Images are tagged with the exact commit they came from, and if a new container dies on startup, the pipeline rolls back to the previous one on its own. If a machine reboots, systemd brings every container back without me logging in.
+
+> **Why not Kubernetes, or Docker?** Kubernetes for a handful of containers is hiring a 400-person orchestra to play happy birthday. And Docker's daemon runs as root by default, while Podman has no daemon at all and runs every container as an ordinary user. If something ever breaks out of a container, it lands as a nobody, not as root.
+
+**Backups:** a manual `pg_dump` before every major update. Have I ever restored one? No. Which makes them Schrödinger's backups: perfectly fine and completely useless at the same time, until the day I open the box. Automated backups with regular restore drills are next on the roadmap, before the universe runs that experiment for me.
 
 Every piece gets a machine of its own. The gateway, each backend service, and PostgreSQL all run on separate hosts and talk over a private network, so a runaway service can't starve its neighbors. Redis lives on the same self-hosted infrastructure, because I apparently enjoy owning things.
 
@@ -179,8 +197,17 @@ Alerts go to my inbox for the things that actually matter: a service down, error
 
 With the HAProxy/Fiber perimeter, gRPC polyglot microservice grid, and zero-trust storage fully operational, future iterations will focus on infrastructure hardening and resilience:
 
+* **Automated Backups & Restore Drills:** Scheduled, off-machine PostgreSQL backups, plus a regular test restore into a throwaway database, because a backup nobody has restored is only a hope.
 * **Bastion Host Deployment:** Severing direct SSH ingress access to production VMs by routing all GitHub Actions image deployments strictly through an isolated bastion host.
 * **Distributed Resilience Patterns:** Enhancing the Gateway and service layers with dynamic P95-based timeouts, circuit breaker feedback loops, and retry budgets.
+
+---
+
+## Would I Recommend This Setup?
+
+No. Not unless you have Google- or GitHub-level traffic, or a hard requirement to isolate parts of your system. For almost everyone else, one well-structured application is faster to build, cheaper to run, and won't page you at 3 AM because a service you forgot existed lost its token.
+
+If I outgrew that, I would grow in steps: first a few services talking REST, with separate schemas in one database. Only then gRPC and separate databases, and only where the numbers prove they're needed. This platform sprinted up the staircase on purpose, because the whole point was to find out what's waiting at the top. Spoiler: a lot of YAML.
 
 ---
 
@@ -195,13 +222,13 @@ The architecture is entirely open-source. You can explore the exact implementati
 **Backend Microservices**
 * [`auth-service`](https://github.com/Aditya-0011/auth-service) - The identity provider, SSO hub, and API key manager (Go).
 * [`manager-service`](https://github.com/Aditya-0011/manager-service) - The headless CMS backend powering the portfolio data (Go).
-* [`wallet-service`](https://github.com/Aditya-0011/wallet-service) - The core financial ledger engine (C# / .NET).
+* [`wallet-service`](https://github.com/Aditya-0011/wallet-service) - The personal expense tracker backend (C# / .NET).
 * [`tools`](https://github.com/Aditya-0011/tools) - The Folio and Stencil backend (Go).
 
 **Client Applications**
 * [`portfolio-website`](https://github.com/Aditya-0011/portfolio-website) - The source code for this exact Next.js portfolio website.
 * [`console-ui`](https://github.com/Aditya-0011/console-ui) - The identity and systems operations dashboard.
 * [`manager-ui`](https://github.com/Aditya-0011/manager-ui) - The dedicated CMS content dashboard.
-* [`wallet-ui`](https://github.com/Aditya-0011/wallet-ui) - The financial tracking dashboard.
+* [`wallet-ui`](https://github.com/Aditya-0011/wallet-ui) - The expense-tracking dashboard.
 * [`tools-ui`](https://github.com/Aditya-0011/tools-ui) - Folio notes and Stencil, in the browser.
 * [`construction-global`](https://github.com/Aditya-0011/construction-global) - The deliberately tiny page for anything still being built.
